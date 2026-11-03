@@ -1679,3 +1679,26 @@ def test_stream_current_inside_managed_callback_returns_raw(relay_turn):
     assert list(stream) == []
     assert stream.final_response is not None
     assert stream.final_response.choices[0].message.content == "done"
+
+
+def test_run_awaitable_closes_coroutine_on_running_event_loop():
+    import gc
+    import warnings
+
+    async def sample_coroutine():
+        return 42
+
+    coro = sample_coroutine()
+    with warnings.catch_warnings(record=True) as recorded_warnings:
+        warnings.simplefilter("always")
+
+        async def run_in_loop():
+            with pytest.raises(RuntimeError, match="cannot run on an event-loop thread"):
+                relay_llm._run_awaitable(coro)
+
+        asyncio.run(run_in_loop())
+        gc.collect()
+
+        warning_messages = [str(w.message) for w in recorded_warnings]
+        assert not any("was never awaited" in msg for msg in warning_messages)
+

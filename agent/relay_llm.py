@@ -187,6 +187,8 @@ def execute(
     attempt = _ManagedAttempt.resolve(session_id, request, metadata, name=name, model_name=model_name)
     if attempt is None:
         return callback(request)
+    if _has_running_event_loop():
+        raise RuntimeError("Synchronous Relay LLM execution cannot run on an event-loop thread")
     try:
         managed = _run_awaitable(attempt.run_managed(
             attempt.runtime.relay.llm.execute, partial(attempt.invoke, callback)
@@ -960,5 +962,7 @@ def _run_awaitable(
     if not inspect.isawaitable(value):
         return value
     if _has_running_event_loop():
+        if inspect.iscoroutine(value):
+            value.close()
         raise RuntimeError(loop_error)
     return asyncio.run(value)
