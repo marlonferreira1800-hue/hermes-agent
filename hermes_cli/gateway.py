@@ -873,6 +873,14 @@ def find_windows_gateway_services(
             if service_pid <= 0:
                 raise RuntimeError(f"Running SCM service {service_name} has no valid process ID")
             service_names_by_pid.setdefault(service_pid, set()).add(service_name)
+    except (PermissionError, getattr(psutil_module, "AccessDenied", PermissionError)) as exc:
+        logger.warning("SCM service enumeration denied (non-elevated session); treating gateways as plain processes: %s", exc)
+        return []
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 5:
+            logger.warning("SCM service enumeration denied (WinError 5); treating gateways as plain processes: %s", exc)
+            return []
+        raise RuntimeError("SCM service enumeration failed") from exc
     except Exception as exc:
         raise RuntimeError("SCM service enumeration failed") from exc
 

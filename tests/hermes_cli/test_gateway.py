@@ -1048,6 +1048,18 @@ def test_find_windows_gateway_services_ignores_task_scheduler_ancestor(monkeypat
     named = run(UnreadableConfigService("HermesGateway", OSError(15100, "MUI file missing")))
     assert [(s.name, s.service_pid, s.gateway_pid) for s in named] == [("HermesGateway", 2360, 18480)]
 
+    def denied_scm_iter():
+        err = PermissionError(5, "Access is denied: '(originated from OpenSCManager)'")
+        err.winerror = 5
+        raise err
+
+    denied = gateway.find_windows_gateway_services(
+        psutil_module=SimpleNamespace(
+            win_service_iter=denied_scm_iter, Process=FakeProcess, AccessDenied=psutil.AccessDenied),
+        profile_processes=[profile],
+    )
+    assert denied == []
+
 
 
 
