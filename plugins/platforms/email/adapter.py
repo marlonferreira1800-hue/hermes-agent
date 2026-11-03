@@ -363,6 +363,20 @@ def _domains_aligned(a: str, b: str) -> bool:
     return bool(a and b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
 
 
+def _authserv_id_matches(header_authserv: str, pinned_authserv: str) -> bool:
+    h = header_authserv.strip().lower()
+    pins = [p.strip().lower() for p in pinned_authserv.split(",") if p.strip()]
+    for p in pins:
+        if p.startswith("."):
+            if h.endswith(p) or h == p.lstrip("."):
+                return True
+        elif h == p:
+            return True
+        elif p.count(".") == 1 and h.endswith("." + p):
+            return True
+    return False
+
+
 def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str, *, authserv_id: str) -> tuple[bool, str]:
     """Verify the ``From:`` domain is authenticated; returns ``(authenticated, reason)``.
     ``From:`` is attacker-controlled (GHSA-rxqh-5572-8m77); the only trustworthy signal is the
@@ -376,19 +390,33 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         return False, "missing From domain"
     if not (headers := msg.get_all("Authentication-Results")):
         return False, _NO_AUTH_RESULTS_REASON
-    trusted = " ".join(str(headers[0]).split())
-    # _ar_clauses removes RFC 8601 CFWS comments and ignores semicolons inside them, so supported
-    # receiver variants remain valid without allowing a lower field or a related domain to satisfy the pin.
-    if (clauses := _ar_clauses(trusted)) is None:
-        return False, "unbalanced quote or comment in Authentication-Results"
     if not authserv_id:  # without a pin the topmost header may be one the sender wrote
         return False, _MISSING_AUTHSERV_REASON
-    if clauses[0].strip().lower() != authserv_id:
-        return False, _UNTRUSTED_AUTHSERV_REASON
+
+    all_clauses: list[str] = []
+    first_trusted_header = ""
+    for idx, raw_header in enumerate(headers):
+        header_text = " ".join(str(raw_header).split())
+        clauses = _ar_clauses(header_text)
+        if clauses is None:
+            if idx == 0:
+                return False, "unbalanced quote or comment in Authentication-Results"
+            continue
+        hdr_authserv = clauses[0].strip().lower()
+        if idx == 0:
+            if not _authserv_id_matches(hdr_authserv, authserv_id):
+                return False, _UNTRUSTED_AUTHSERV_REASON
+            first_trusted_header = header_text
+            all_clauses.extend(clauses[1:])
+        else:
+            if _authserv_id_matches(hdr_authserv, authserv_id):
+                all_clauses.extend(clauses[1:])
+            else:
+                break
     # Each verdict comes from the head of its own clause (split outside quotes/comments) and its domains only from that
     # clause: a quoted local part or comment can otherwise smuggle ``spf=pass``/``header.d=`` (GHSA-rxqh-5572-8m77).
     results: dict[str, list[tuple[str, list[tuple[str, str]]]]] = {"dmarc": [], "spf": [], "dkim": []}
-    for clause in clauses:
+    for clause in all_clauses:
         if m := _AUTH_METHOD_RE.match(clause):
             results[m.group(1).lower()].append((m.group(2).lower(), _auth_props(clause)))
 
@@ -409,7 +437,7 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     if any(r == "pass" and aligned(props, ("header.d",) if any(p == "header.d" for p, _ in props) else ("header.from",))
            for r, props in results["dkim"]):
         return True, "dkim=pass aligned"
-    return False, f"authentication failed ({trusted[:120]})"
+    return False, f"authentication failed ({first_trusted_header[:120]})"
 
 
 def _extract_attachments(msg: email_lib.message.Message, skip_attachments: bool = False) -> list[dict[str, Any]]:

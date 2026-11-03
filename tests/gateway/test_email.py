@@ -1404,6 +1404,17 @@ class TestSenderAuthentication(unittest.TestCase):
         )
         self.assertFalse(ok, reason)
 
+    def test_fastmail_multi_header_authentication(self):
+        """Fastmail stamps four contiguous Authentication-Results headers; verdicts in the 4th."""
+        headers = [
+            "stl-mx-04.messagingengine.com; x-csa=none; x-me-sender=pass",
+            "stl-mx-04.messagingengine.com; bimi=skipped (DMARC Policy is not at enforcement)",
+            "stl-mx-04.messagingengine.com; arc=none (no signatures found)",
+            "stl-mx-04.messagingengine.com; dkim=pass header.d=example.com; dmarc=pass header.from=example.com; spf=pass smtp.mailfrom=admin@example.com",
+        ]
+        ok, reason = self._verify("Admin <admin@example.com>", headers, authserv_id="messagingengine.com")
+        self.assertTrue(ok, reason)
+        self.assertEqual(reason, "dmarc=pass")
 
     def test_only_topmost_exact_authserv_id_is_trusted(self):
         """Never search below the authoritative field or relax an authserv-id pin.
