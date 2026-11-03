@@ -870,6 +870,21 @@ def _output_text_of(item: Any) -> str:
     ).strip()
 
 
+def _is_valid_json_arguments(raw: Any) -> bool:
+    if isinstance(raw, (dict, list)):
+        return True
+    if not isinstance(raw, str):
+        return False
+    s = raw.strip()
+    if not s or s == "{}":
+        return True
+    try:
+        json.loads(s)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 class _CodexResponseAssembler:
     """Assemble a Response-shaped ``SimpleNamespace`` from raw Responses SSE events.
 
@@ -990,7 +1005,19 @@ class _CodexResponseAssembler:
             # Authoritative for the accumulated string; an explicit "" (zero-arg call) counts, only a
             # missing field keeps the streamed deltas.
             if (done_args := _event_field(event, "arguments", None)) is not None:
-                pending["arguments"] = str(done_args)
+                done_str = str(done_args)
+                accumulated = pending.get("arguments", "")
+                if done_str == accumulated or not accumulated:
+                    pending["arguments"] = done_str
+                elif _is_valid_json_arguments(done_str):
+                    pending["arguments"] = done_str
+                elif _is_valid_json_arguments(accumulated):
+                    logger.warning(
+                        "Codex function_call_arguments.done.arguments is invalid JSON but accumulated deltas are valid; "
+                        "preserving accumulated arguments"
+                    )
+                else:
+                    pending["arguments"] = done_str
 
     def _on_reasoning_delta(self, event: Any, event_type: str) -> None:
         reasoning_text = _event_field(event, "delta", "")
@@ -1038,6 +1065,15 @@ class _CodexResponseAssembler:
                 announced_alias = min((self.pending_function_calls[key] for key in pending_keys),
                                       key=lambda pending: pending["sequence"])
                 announced_sequence, announced_index = announced_alias["sequence"], announced_alias["output_index"]
+                accumulated = announced_alias.get("arguments", "")
+                done_args = getattr(done_item, "arguments", None)
+                if done_args is not None and accumulated:
+                    done_str = str(done_args)
+                    if not _is_valid_json_arguments(done_str) and _is_valid_json_arguments(accumulated):
+                        try:
+                            done_item.arguments = accumulated
+                        except (AttributeError, TypeError):
+                            pass
         if announced_sequence is None:
             announced_sequence, self.next_output_sequence = self.next_output_sequence, self.next_output_sequence + 1
         self.output_indexes.append(_event_field(event, "output_index", announced_index))

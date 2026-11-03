@@ -476,3 +476,89 @@ def test_announced_non_function_item_precedes_pending_call():
     assert types == ["message", "function_call"], (
         f"announced message lost its leading position: {types}"
     )
+
+
+def test_incomplete_function_call_arguments_done_preserves_valid_deltas():
+    """#148158: When function_call_arguments.done.arguments is truncated/invalid
+    JSON but the streamed deltas form valid JSON, retain the deltas."""
+    valid_args = '{"context_id": "test", "plan": [{"id": "s1", "step": "do"}]}'
+    truncated_done = '{"context_id": "test", "plan": [{"id":'
+    events = [
+        SimpleNamespace(type="response.created", response=SimpleNamespace(id="resp_1")),
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call",
+                id="fc_plan",
+                call_id="call_plan",
+                name="update_plan",
+                arguments="",
+            ),
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.delta",
+            item_id="fc_plan",
+            output_index=0,
+            delta=valid_args,
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            item_id="fc_plan",
+            output_index=0,
+            arguments=truncated_done,
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(id="resp_1", status="completed", output=None),
+        ),
+    ]
+    final = _consume_codex_event_stream(events, model="gpt-test")
+    calls = [item for item in final.output if getattr(item, "type", "") == "function_call"]
+    assert calls and calls[0].arguments == valid_args
+
+
+def test_incomplete_output_item_done_arguments_preserves_valid_deltas():
+    """#148158: If output_item.done carries truncated arguments on the item itself,
+    preserve valid accumulated delta arguments."""
+    valid_args = '{"context_id": "test", "plan": [{"id": "s1"}]}'
+    truncated_done = '{"context_id": "test", "plan": ['
+    events = [
+        SimpleNamespace(type="response.created", response=SimpleNamespace(id="resp_1")),
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call",
+                id="fc_plan",
+                call_id="call_plan",
+                name="update_plan",
+                arguments="",
+            ),
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.delta",
+            item_id="fc_plan",
+            output_index=0,
+            delta=valid_args,
+        ),
+        SimpleNamespace(
+            type="response.output_item.done",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call",
+                id="fc_plan",
+                call_id="call_plan",
+                name="update_plan",
+                arguments=truncated_done,
+            ),
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(id="resp_1", status="completed", output=None),
+        ),
+    ]
+    final = _consume_codex_event_stream(events, model="gpt-test")
+    calls = [item for item in final.output if getattr(item, "type", "") == "function_call"]
+    assert calls and calls[0].arguments == valid_args
+
