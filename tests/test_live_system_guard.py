@@ -94,3 +94,26 @@ def test_default_home_unmarked_tmpdir_is_relocated_before_pytest_uses_it(tmp_pat
         env=env, capture_output=True, text=True, check=True,
     )
     assert not result.stdout.strip().startswith(str(operator_home / ".hermes"))
+
+
+def test_late_spawned_child_signalable_without_psutil(monkeypatch):
+    """Descendants spawned during tests must be signalable during teardown even if psutil is absent."""
+    import signal
+    from tests._fixtures import live_system_guard
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+    try:
+        assert proc.pid in live_system_guard._LIVE_GUARD_SPAWNED_PIDS
+
+        # Simulate psutil absence in the guard's lookup
+        monkeypatch.setattr(live_system_guard, "_psutil", None, raising=False)
+
+        # Probing or signaling our own spawned child must succeed without RuntimeError
+        os.kill(proc.pid, 0)
+    finally:
+        try:
+            proc.kill()
+            proc.wait(timeout=2)
+        except Exception:
+            pass
+

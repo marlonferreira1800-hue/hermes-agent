@@ -47,6 +47,7 @@ _GATEWAY_LOOKALIKE_MARK = "spawns_gateway_lookalike"
 
 # Tests may designate a temporary repo to exercise the real guard safely.
 _LIVE_GUARD_PROTECTED_GIT_ROOTS = (PROJECT_ROOT,)
+_LIVE_GUARD_SPAWNED_PIDS: set[int] = set()
 
 
 @pytest.fixture(autouse=True)
@@ -98,6 +99,34 @@ def _live_system_guard(request, monkeypatch):
         _psutil = None
         _initial_children = set()
 
+    def _is_proc_descendant(pid: int, ancestor_pids: set[int]) -> bool:
+        if not _os.path.isdir("/proc"):
+            return False
+        curr = pid
+        visited = set()
+        while curr > 1 and curr not in visited:
+            visited.add(curr)
+            status_path = f"/proc/{curr}/status"
+            if not _os.path.exists(status_path):
+                # Stale PID — process already terminated, allow signal (no-op).
+                return True
+            try:
+                with open(status_path, "r", encoding="utf-8") as f:
+                    found_ppid = False
+                    for line in f:
+                        if line.startswith("PPid:"):
+                            ppid = int(line.split()[1])
+                            if ppid in ancestor_pids:
+                                return True
+                            curr = ppid
+                            found_ppid = True
+                            break
+                    if not found_ppid:
+                        break
+            except Exception:
+                return False
+        return False
+
     def _is_own_subtree(pid: int) -> bool:
         # PID 0 means "our own process group"; -1 means "every process we
         # can signal". Both are dangerous when paired with SIGTERM/SIGKILL,
@@ -107,10 +136,10 @@ def _live_system_guard(request, monkeypatch):
             return True
         if pid < 0:
             return False
-        if pid == test_pid or pid in _initial_children:
+        if pid == test_pid or pid in _initial_children or pid in _LIVE_GUARD_SPAWNED_PIDS:
             return True
         if _psutil is None:
-            return False
+            return _is_proc_descendant(pid, {test_pid} | _initial_children | _LIVE_GUARD_SPAWNED_PIDS)
         try:
             walker = _psutil.Process(pid)
         except Exception:
@@ -118,7 +147,7 @@ def _live_system_guard(request, monkeypatch):
             return True
         try:
             for parent in walker.parents():
-                if parent.pid == test_pid:
+                if parent.pid == test_pid or parent.pid in _LIVE_GUARD_SPAWNED_PIDS:
                     return True
         except Exception:
             return False
@@ -128,12 +157,24 @@ def _live_system_guard(request, monkeypatch):
         # A zombie cannot be harmed by any signal. A killed descendant whose parent exited is
         # reparented to init (or a CI subreaper) and stays a zombie with a foreign parent chain
         # until that reaper collects it, so a test's cleanup kill of it must pass.
-        if _psutil is None or pid <= 0:
+        if pid <= 0:
             return False
-        try:
-            return _psutil.Process(pid).status() == _psutil.STATUS_ZOMBIE
-        except Exception:
-            return False
+        if _psutil is not None:
+            try:
+                return _psutil.Process(pid).status() == _psutil.STATUS_ZOMBIE
+            except Exception:
+                return False
+        if _os.path.isdir("/proc"):
+            status_path = f"/proc/{pid}/status"
+            if _os.path.exists(status_path):
+                try:
+                    with open(status_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if line.startswith("State:"):
+                                return "Z" in line
+                except Exception:
+                    pass
+        return False
 
     real_kill = _os.kill
 
@@ -458,6 +499,8 @@ def _live_system_guard(request, monkeypatch):
             def __init__(self, cmd, *args, **kwargs):
                 _check_subprocess_cmd("Popen", cmd, kwargs)
                 super().__init__(cmd, *args, **kwargs)
+                if getattr(self, "pid", None):
+                    _LIVE_GUARD_SPAWNED_PIDS.add(int(self.pid))
 
         _GuardedPopen.__name__ = "Popen"
         _GuardedPopen.__qualname__ = "Popen"
@@ -529,11 +572,17 @@ def _live_system_guard(request, monkeypatch):
             _check_subprocess_cmd(
                 "asyncio.create_subprocess_exec", [program, *args], kwargs
             )
-            return await real_async_exec(program, *args, **kwargs)
+            proc = await real_async_exec(program, *args, **kwargs)
+            if getattr(proc, "pid", None):
+                _LIVE_GUARD_SPAWNED_PIDS.add(int(proc.pid))
+            return proc
 
         async def _guarded_async_shell(cmd, *args, **kwargs):
             _check_subprocess_cmd("asyncio.create_subprocess_shell", cmd, kwargs)
-            return await real_async_shell(cmd, *args, **kwargs)
+            proc = await real_async_shell(cmd, *args, **kwargs)
+            if getattr(proc, "pid", None):
+                _LIVE_GUARD_SPAWNED_PIDS.add(int(proc.pid))
+            return proc
 
         monkeypatch.setattr(_asyncio, "create_subprocess_exec", _guarded_async_exec)
         monkeypatch.setattr(
