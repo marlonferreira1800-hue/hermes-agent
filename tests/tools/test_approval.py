@@ -152,6 +152,29 @@ class TestDetectDangerousRm:
                 assert key is not None, command
                 assert "delete" in desc.lower(), command
 
+    def test_relative_path_glob_and_multi_target_rm_detected(self):
+        # Relative paths, `..` traversal, globs, and multi-operand deletions (#151542)
+        # require approval just like absolute-path `rm`.
+        for cmd in (
+            "cd /srv/app/checkout-api && rm logs/archive/*.log.gz",
+            "rm -f logs/archive/*",
+            "rm ../../etc/passwd",
+            "rm ./sub/file.txt",
+            "rm *.log.gz",
+            "rm file1.txt file2.txt",
+            "sudo rm -f logs/archive/app.log",
+        ):
+            is_dangerous, key, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is True, f"{cmd!r} should require approval"
+            assert key is not None, cmd
+            assert "delete" in desc.lower(), cmd
+
+        for safe_cmd in (
+            'echo "rm logs/archive/*"',
+            'git commit -m "rm ../../etc/passwd"',
+        ):
+            assert detect_dangerous_command(safe_cmd) == (False, None, None), safe_cmd
+
 
 class TestDynamicShellWordSpellings:
     """Unquoted brace/glob words that the shell can expand into `find -delete`/`-exec` or into a

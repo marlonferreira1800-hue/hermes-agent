@@ -427,6 +427,16 @@ DANGEROUS_PATTERNS = [
      # spellings the two patterns above catch — without this rule they run with no approval prompt at all.
      # Port of openai/codex#33464 ("recognize force options when they follow operands").
      "recursive delete (flags after operands)"),
+    # Relative-path, parent-traversal (`..`), glob, and multi-operand deletions (#151542): after a `cd`,
+    # `rm logs/archive/*.log.gz`, `rm -f logs/archive/*`, `rm ../../etc/passwd`, or `rm a.txt b.txt`
+    # deletes the same targets as an absolute path and must require approval, while a single local file
+    # (`rm readme.txt`, `rm -f readme.txt`) stays unprompted.
+    (_CMDPOS + r'rm\s+(?:-[^\s]+\s+)*(?:'
+     r'[^\s\n"\';|&]*[*?\[][^\n"\';|&]*'
+     r'|(?:\.\.(?:/|$)|(?:(?!-\S)[^\s\n"\';|&]+/)+[^\s\n"\';|&]+)'
+     r'|(?!-\S)[^\s\n"\';|&]+\s+(?!-\S)(?![0-9]*>>?|[|;&\n])[^\s\n"\';|&]+'
+     r')',
+     "delete relative path, glob, or multiple targets"),
 
     # Windows cmd/powershell destructive built-ins: gate only when executed through the shell so
     # prose/filenames containing "del"/"rd" do not trip.
